@@ -1,101 +1,138 @@
+
 import os
+import logging
+import threading
+
 import telebot
+from flask import Flask, request
 
-from flask import Flask, request, abort
-from dotenv import load_dotenv
+# =========================
+# SOZLAMALAR
+# =========================
 
-load_dotenv()
-
-TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
 
-if not TOKEN:
+if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN topilmadi!")
 
 if not WEBHOOK_URL:
     raise ValueError("WEBHOOK_URL topilmadi!")
 
-if not WEBHOOK_SECRET:
-    raise ValueError("WEBHOOK_SECRET topilmadi!")
+WEBHOOK_PATH = "/webhook"
 
-bot = telebot.TeleBot(TOKEN)
+# =========================
+# BOT
+# =========================
+
+bot = telebot.TeleBot(BOT_TOKEN)
+
 app = Flask(__name__)
 
+logging.basicConfig(level=logging.INFO)
 
-# Sayt ishlayotganini tekshirish
-@app.route("/", methods=["GET"])
-def home():
-    return "Telegram Business bot ishlayapti!", 200
+# =========================
+# BUSINESS XABARLAR
+# =========================
 
-
-# Telegram webhook manzili
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    # So'rov Telegramdan kelganini tekshirish
-    secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
-
-    if secret != WEBHOOK_SECRET:
-        abort(403)
-
-    if not request.is_json:
-        abort(400)
-
-    update = telebot.types.Update.de_json(request.get_json())
-    bot.process_new_updates([update])
-
-    return "OK", 200
-
-
-# /start komandasi
-@bot.message_handler(commands=["start"])
-def start(message):
-    bot.send_message(
-        message.chat.id,
-        "Salom! Bot ishlayapti 😊"
-    )
-
-
-# Business ulanishini tekshirish
-@bot.business_connection_handler()
-def connection(message):
-    print("BUSINESS ULANISH KELDI!")
-    print("Faol:", message.is_enabled)
-    print("Ruxsatlar:", message.rights)
-
-
-# Shaxsiy akkauntga kelgan xabarlarga javob
-@bot.business_message_handler(content_types=["text"])
-def auto_reply(message):
-    print("XABAR:", message.text)
+@bot.business_message_handler(func=lambda message: True)
+def business_reply(message):
 
     try:
+        print("XABAR KELDI:", message.text)
+
+        if not message.business_connection_id:
+            print("Business connection ID topilmadi!")
+            return
+
+        text = message.text or ""
+
+        if not text.strip():
+            return
+
+        # O'z xabaringizga javob bermaslik
+        if message.from_user and message.from_user.is_bot:
+            return
+
+        answer = "Salom! 😊 Xabaringiz uchun rahmat. Tez orada javob beramiz."
+
         bot.send_message(
             chat_id=message.chat.id,
-            text="Assalomu alaykum! Iymona sizga aloqaga chiqadi 😊",
+            text=answer,
             business_connection_id=message.business_connection_id
         )
 
         print("JAVOB YUBORILDI!")
 
     except Exception as e:
-        print("XATOLIK:", repr(e))
+        logging.exception("Javob yuborishda xatolik: %s", e)
 
 
-# Webhookni Telegramga ulash
-webhook_url = WEBHOOK_URL.rstrip("/") + "/webhook"
+# =========================
+# WEBHOOK
+# =========================
 
-bot.remove_webhook()
+@app.route(WEBHOOK_PATH, methods=["POST"])
+def webhook():
 
-result = bot.set_webhook(
-    url=webhook_url,
-    secret_token=WEBHOOK_SECRET,
-    allowed_updates=[
-        "message",
-        "business_connection",
-        "business_message"
-    ]
-)
+    try:
+        json_data = request.get_json(force=True)
 
-print("Webhook o'rnatildi:", result)
-print("Webhook manzili:", webhook_url)
+        update = telebot.types.Update.de_json(json_data)
+
+        bot.process_new_updates([update])
+
+        return "OK", 200
+
+    except Exception as e:
+        logging.exception("Webhook xatosi: %s", e)
+        return "ERROR", 500
+
+
+# =========================
+# HEALTH CHECK
+# =========================
+
+@app.route("/", methods=["GET"])
+def home():
+    return "Telegram Business Auto Reply Bot ishlayapti!", 200
+
+
+# =========================
+# WEBHOOK O'RNATISH
+# =========================
+
+def setup_webhook():
+
+    url = WEBHOOK_URL.rstrip("/") + WEBHOOK_PATH
+
+    try:
+        bot.remove_webhook()
+        result = bot.set_webhook(url=url)
+
+        if result:
+            print("WEBHOOK O'RNATILDI:", url)
+        else:
+            print("WEBHOOK O'RNATILMADI!")
+
+    except Exception as e:
+        logging.exception("Webhook o'rnatishda xatolik: %s", e)
+
+
+# =========================
+# ISHGA TUSHIRISH
+# =========================
+
+if __name__ == "__main__":
+
+    setup_webhook()
+
+    port = int(os.environ.get("PORT", 10000))
+
+    print("BOT ISHGA TUSHDI!")
+    print("BOT USERNAME:", bot.get_me().username)
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
